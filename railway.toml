@@ -1,6 +1,8 @@
 [build]
 builder = "NIXPACKS"
 
+[start]
+cmd = "python3 main.py"
+
 [deploy]
 restartPolicy = "always"
-
