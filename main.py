@@ -1,12 +1,105 @@
+import time
+import requests
+import statistics
+from datetime import datetime
+
+# ==================== TELEGRAM CONFIG ====================
+TELEGRAM_TOKEN = "8303064683:AAH3HF-RT8UGpKFbBCetjejd3b0xf-v7zZs"
+TELEGRAM_CHAT_ID = "7653908542"
+# ==========================================================
+
+# ==================== BOT CONFIG ==========================
+BINANCE_FUTURES = "https://fapi.binance.com"
+CHECK_INTERVAL_SECONDS = 60  # 1 minute loop
+BODY_PCT_OF_RANGE = 0.80
+WICK_PCT_OF_RANGE = 0.05
+MIN_BODY_VS_AVG = 1.5
+VOLUME_MULTIPLIER = 1.5
+EMA_SHORT = 21
+EMA_LONG = 200
+USE_TREND_FILTER = True
+TP_RR = 2.0
+# ==========================================================
+
+
+def log(msg):
+    print(f"[{datetime.utcnow()}] {msg}", flush=True)
+
+
+def telegram_send(text):
+    try:
+        url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+        payload = {"chat_id": TELEGRAM_CHAT_ID, "text": text, "parse_mode": "HTML"}
+        requests.post(url, json=payload, timeout=10)
+    except Exception as e:
+        log(f"Telegram Error: {e}")
+
+
+# ==================== FETCH ALL FUTURES SYMBOLS ====================
+def get_all_futures_symbols():
+    url = f"{BINANCE_FUTURES}/fapi/v1/exchangeInfo"
+    data = requests.get(url, timeout=10).json()
+
+    symbols = []
+    for s in data["symbols"]:
+        if s["contractType"] == "PERPETUAL" and s["quoteAsset"] == "USDT":
+            symbols.append(s["symbol"])
+
+    return symbols
+
+
+# ==================== FETCH FUTURES KLINES =========================
+def fetch_futures_klines(symbol):
+    url = f"{BINANCE_FUTURES}/fapi/v1/klines"
+    params = {"symbol": symbol, "interval": "4h", "limit": 200}
+    return requests.get(url, params=params, timeout=10).json()
+
+
+# ==================== EMA CALC ==========================
+def calc_ema(values, period):
+    k = 2 / (period + 1)
+    ema = []
+    prev = None
+    for v in values:
+        if prev is None:
+            prev = v
+        prev = (v - prev) * k + prev
+        ema.append(prev)
+    return ema
+
+
+# ==================== MARUBOZU CHECK ====================
+def analyze(o, h, l, c, vol, bodies, avg_vol):
+    body = abs(c - o)
+    rng = h - l
+    if rng == 0:
+        return False, None
+
+    upper = h - max(o, c)
+    lower = min(o, c) - l
+
+    if (
+        body / rng >= BODY_PCT_OF_RANGE
+        and upper / rng <= WICK_PCT_OF_RANGE
+        and lower / rng <= WICK_PCT_OF_RANGE
+        and body >= MIN_BODY_VS_AVG * statistics.mean(bodies)
+        and vol >= VOLUME_MULTIPLIER * avg_vol
+    ):
+        return True, "bull" if c > o else "bear"
+
+    return False, None
+
+
+# ==================== MAIN LOOP ==========================
 def run():
-    log("🚀 Marubozu Futures Bot Started (Railway)")
+    log("🚀 Marubozu Futures Bot Started (ALL BINANCE FUTURES)")
     last_alert = {}
 
     while True:
         try:
-            log("🔍 Fetching top 50 futures symbols...")
-            symbols = get_top_futures()
-            log(f"📌 Found {len(symbols)} symbols")
+            log("🔍 Fetching ALL Binance Futures symbols...")
+            symbols = get_all_futures_symbols()
+            log(f"📌 Total futures pairs: {len(symbols)}")
 
             for s in symbols:
                 try:
@@ -28,7 +121,6 @@ def run():
                     )
 
                     if last_alert.get(s) == ot:
-                        log(f"⏭️ Already alerted for {s}, skipping...")
                         continue
 
                     bodies = [abs(float(k[4]) - float(k[1])) for k in klines[-12:-2]]
@@ -46,7 +138,7 @@ def run():
                     ema_l = calc_ema(closes, EMA_LONG)[-1]
                     trend = "up" if ema_s > ema_l else "down"
 
-                    log(f"📈 Trend for {s}: {trend}")
+                    log(f"📈 EMA Trend for {s}: {trend}")
 
                     if USE_TREND_FILTER:
                         if direction == "bull" and trend != "up":
@@ -54,6 +146,7 @@ def run():
                         if direction == "bear" and trend != "down":
                             continue
 
+                    # Entry/SL/TP
                     if direction == "bull":
                         entry = c
                         sl = l - (0.002 * c)
@@ -64,9 +157,9 @@ def run():
                         tp = entry - TP_RR * (sl - entry)
 
                     msg = f"""
-🚨 <b>{direction.upper()} MARUBOZU (Binance Futures)</b>
+🚨 <b>{direction.upper()} MARUBOZU FOUND</b>
 Symbol: <b>{s}</b>
-TF: <b>4H</b>
+Timeframe: <b>4H</b>
 
 Close: <b>{c}</b>
 Volume: <b>{vol}</b>
@@ -76,7 +169,7 @@ Entry: <b>{entry}</b>
 SL: <b>{sl}</b>
 TP: <b>{tp}</b>
 
-<i>Railway Bot</i>
+<i>Binance Futures Scanner</i>
 """
                     telegram_send(msg)
                     log(f"📤 ALERT SENT → {s}")
@@ -86,9 +179,13 @@ TP: <b>{tp}</b>
                 except Exception as e:
                     log(f"❌ ERROR processing {s}: {e}")
 
-            log("😴 Sleeping 60 seconds...")
+            log("😴 Sleeping 60 seconds...\n")
             time.sleep(CHECK_INTERVAL_SECONDS)
 
         except Exception as e:
             log(f"🔥 MAIN LOOP ERROR: {e}")
             time.sleep(5)
+
+
+if __name__ == "__main__":
+    run()
