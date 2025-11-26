@@ -10,7 +10,7 @@ TELEGRAM_CHAT_ID = "7653908542"
 
 # ==================== BOT CONFIG ==========================
 BINANCE_FUTURES = "https://fapi.binance.com"
-CHECK_INTERVAL_SECONDS = 60  # 1 minute loop
+CHECK_INTERVAL_SECONDS = 60
 BODY_PCT_OF_RANGE = 0.80
 WICK_PCT_OF_RANGE = 0.05
 MIN_BODY_VS_AVG = 1.5
@@ -37,22 +37,43 @@ def telegram_send(text):
 
 # ==================== FETCH ALL FUTURES SYMBOLS ====================
 def get_all_futures_symbols():
-    url = f"{BINANCE_FUTURES}/fapi/v1/exchangeInfo"
-    data = requests.get(url, timeout=10).json()
+    try:
+        url = f"{BINANCE_FUTURES}/fapi/v1/exchangeInfo"
+        data = requests.get(url, timeout=10).json()
 
-    symbols = []
-    for s in data["symbols"]:
-        if s["contractType"] == "PERPETUAL" and s["quoteAsset"] == "USDT":
-            symbols.append(s["symbol"])
+        # Prevent crashing if Binance returns error
+        if "symbols" not in data:
+            log(f"❌ Binance API Error (exchangeInfo): {data}")
+            return []
 
-    return symbols
+        symbols = []
+        for s in data["symbols"]:
+            if s["contractType"] == "PERPETUAL" and s["quoteAsset"] == "USDT":
+                symbols.append(s["symbol"])
+
+        return symbols
+
+    except Exception as e:
+        log(f"❌ ERROR fetching symbols: {e}")
+        return []
 
 
 # ==================== FETCH FUTURES KLINES =========================
 def fetch_futures_klines(symbol):
-    url = f"{BINANCE_FUTURES}/fapi/v1/klines"
-    params = {"symbol": symbol, "interval": "4h", "limit": 200}
-    return requests.get(url, params=params, timeout=10).json()
+    try:
+        url = f"{BINANCE_FUTURES}/fapi/v1/klines"
+        params = {"symbol": symbol, "interval": "4h", "limit": 200}
+        data = requests.get(url, params=params, timeout=10).json()
+
+        if isinstance(data, dict) and "code" in data:
+            log(f"❌ Binance API Error for {symbol}: {data}")
+            return []
+
+        return data
+
+    except Exception as e:
+        log(f"❌ ERROR fetching klines for {symbol}: {e}")
+        return []
 
 
 # ==================== EMA CALC ==========================
@@ -99,6 +120,12 @@ def run():
         try:
             log("🔍 Fetching ALL Binance Futures symbols...")
             symbols = get_all_futures_symbols()
+
+            if not symbols:
+                log("⚠️ No symbols fetched — Binance may be rate-limiting. Retrying...")
+                time.sleep(5)
+                continue
+
             log(f"📌 Total futures pairs: {len(symbols)}")
 
             for s in symbols:
@@ -106,7 +133,7 @@ def run():
                     log(f"⏳ Fetching klines for {s}")
                     klines = fetch_futures_klines(s)
 
-                    if len(klines) < 30:
+                    if not klines or len(klines) < 30:
                         log(f"⚠️ Not enough data for {s}")
                         continue
 
@@ -146,7 +173,6 @@ def run():
                         if direction == "bear" and trend != "down":
                             continue
 
-                    # Entry/SL/TP
                     if direction == "bull":
                         entry = c
                         sl = l - (0.002 * c)
