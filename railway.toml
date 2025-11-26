@@ -1,1 +1,6 @@
+[build]
+builder = "NIXPACKS"
+
+[deploy]
+restartPolicy = "always"
 
